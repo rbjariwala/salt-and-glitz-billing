@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SALT & GLITZ - Premium Jewellery Billing</title>
+    <!-- લાઈવ ફ્રેમવર્ક લાઈબ્રેરીઝ - બિલ્ડ પ્રોસેસ વગર ચલાવવા માટે -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50 antialiased">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        function App() {
+            const [currentTab, setCurrentTab] = React.useState('dashboard');
+            
+            // લાઈવ રેટ કંટ્રોલ (સેવ બેકઅપ સાથે)
+            const [goldRate, setGoldRate] = React.useState(() => Number(localStorage.getItem('goldRate')) || 6500);
+            const [silverRate, setSilverRate] = React.useState(() => Number(localStorage.getItem('silverRate')) || 85);
+            const [inputGold, setInputGold] = React.useState(goldRate);
+            const [inputSilver, setInputSilver] = React.useState(silverRate);
+
+            // બ્રાન્ડ લોક પ્રોફાઈલ સેટિંગ્સ
+            const [shopName] = React.useState('SALT & GLITZ');
+            const [shopPhone, setShopPhone] = React.useState(() => localStorage.getItem('shopPhone') || '9876543210');
+            const [shopAddress, setShopAddress] = React.useState(() => localStorage.getItem('shopAddress') || 'Surat, Gujarat');
+            const [shopGST, setShopGST] = React.useState(() => localStorage.getItem('shopGST') || '24AAAAA0000A1Z1');
+            const [financialYear] = React.useState('2026-27');
+            const [shopLogo, setShopLogo] = React.useState(() => localStorage.getItem('shopLogo') || null);
+
+            // માસ્ટર સ્ટેટ્સ
+            const [stockList, setStockList] = React.useState([]);
+            const [customerName, setCustomerName] = React.useState('');
+            const [mobileNumber, setMobileNumber] = React.useState('');
+            const [billingBarcode, setBillingBarcode] = React.useState('');
+            const [billItems, setBillItems] = React.useState([]);
+            const [discount, setDiscount] = React.useState(0);
+            const [invoiceNumber, setInvoiceNumber] = React.useState('');
+
+            // 📸 ઓટોમેશન: લેપટોપ કેમેરા સ્કેનર એક્ટિવેશન
+            React.useEffect(() => {
+                if (currentTab === 'sale' || currentTab === 'estimate') {
+                    const timer = setTimeout(() => {
+                        const scanner = new Html5QrcodeScanner("camera-reader", { fps: 15, qrbox: 250 }, false);
+                        scanner.render((decodedText) => {
+                            handleAutoScanning(decodedText, currentTab === 'estimate');
+                        }, (error) => {});
+                        
+                        return () => { scanner.clear().catch(err => console.error(err)); };
+                    }, 400);
+                    return () => clearTimeout(timer);
+                }
+            }, [currentTab, stockList, goldRate, silverRate]);
+
+            React.useEffect(() => {
+                const prefix = currentTab === 'sale' ? 'INV' : 'EST';
+                setInvoiceNumber(`${prefix}-${financialYear}-${Math.floor(10000 + Math.random() * 90000)}`);
+            }, [currentTab]);
+
+            // લોગો અપલોડ મેનેજમેન્ટ
+            const handleLogoUpload = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        setShopLogo(reader.result);
+                        localStorage.setItem('shopLogo', reader.result);
+                    };
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            // એક્સેલ સ્ટોક ઇમ્પોર્ટ મેટ્રિક્સ (BARCODE, LABELNO., LABOUR, GW.)
+            const handleExcelImport = (e) => {
+                const file = e.target.files[0]; if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const bstr = evt.target.result;
+                    const wb = XLSX.read(bstr, { type: 'binary' });
+                    const data = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+
+                    const imported = data.map((row, idx) => {
+                        const label = String(row['LABELNO.'] || '').toUpperCase();
+                        return {
+                            id: `STK-${Date.now()}-${idx}`,
+                            barcode: String(row['BARCODE'] || '').trim(),
+                            labelNo: label,
+                            labour: Number(row['LABOUR'] || 0),
+                            gw: Number(row['GW.'] || 0),
+                            status: 'Available',
+                            itemType: label.includes('SILVER') || label.includes('CHANDI') ? 'Silver' : 'Gold'
+                        };
+                    }).filter(i => i.barcode !== '');
+
+                    setStockList(prev => [...prev, ...imported]);
+                    alert(`🎉 Successfully loaded ${imported.length} items to active stock!`);
+                };
+                reader.readAsBinaryString(file);
+            };
+
+            // બારકોડ સ્કેન ગણતરી એન્જીન
+            const handleAutoScanning = (scannedCode, isEstimate) => {
+                const item = stockList.find(s => s.barcode === scannedCode && s.status === 'Available');
+                if (!item) return;
+
+                const isSilver = item.itemType === 'Silver';
+                const currentRate = isSilver ? silverRate : goldRate;
+                const defaultHSN = isSilver ? '7114' : '7113';
+                const lineTotal = (item.gw * currentRate) + (item.gw * item.labour);
+
+                const newItem = {
+                    barcode: item.barcode, labelNo: item.labelNo, gw: item.gw,
+                    labour: item.labour, rateUsed: currentRate, total: lineTotal, hsn: defaultHSN
+                };
+
+                setBillItems(prev => {
+                    if (prev.some(b => b.barcode === scannedCode)) return prev;
+                    if (!isEstimate) { item.status = 'Sold'; }
+                    return [...prev, newItem];
+                });
+            };
+
+            const subTotal = billItems.reduce((sum, item) => sum + item.total, 0);
+            const afterDiscount = Math.max(0, subTotal - discount);
+            const gst = currentTab === 'sale' ? afterDiscount * 0.03 : 0;
+            const grandTotal = afterDiscount + gst;
+
+            return (
+                <div className="flex h-screen bg-slate-50 font-sans print:bg-white overflow-hidden">
+                    
+                    {/* SIDEBAR NAVIGATION */}
+                    <div className="w-64 bg-slate-900 text-white flex flex-col print:hidden shadow-xl">
+                        <div className="p-5 border-b border-slate-800 bg-slate-950">
+                            <h2 className="text-xl font-black text-amber-400 tracking-wider">SALT & GLITZ</h2>
+                            <p className="text-[10px] text-slate-400 mt-0.5 tracking-widest uppercase">Premium Jewellery Platform</p>
+                        </div>
+                        <nav className="flex-1 p-4 space-y-1.5">
+                            <button onClick={() => { setCurrentTab('dashboard'); setBillItems([]); }} className={`w-full text-left py-2.5 px-4 rounded-lg text-sm font-medium transition ${currentTab === 'dashboard' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>🏪 Store Dashboard</button>
+                            <button onClick={() => { setCurrentTab('stock'); setBillItems([]); }} className={`w-full text-left py-2.5 px-4 rounded-lg text-sm font-medium transition ${currentTab === 'stock' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>📦 Stock Matrix Import</button>
+                            <button onClick={() => { setCurrentTab('estimate'); setBillItems([]); }} className={`w-full text-left py-2.5 px-4 rounded-lg text-sm font-medium transition ${currentTab === 'estimate' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>📝 Estimate Bill</button>
+                            <button onClick={() => { setCurrentTab('sale'); setBillItems([]); }} className={`w-full text-left py-2.5 px-4 rounded-lg text-sm font-medium transition ${currentTab === 'sale' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>🛍️ Tax Invoice (Sale)</button>
+                        </nav>
+                        <div className="p-4 border-t border-slate-800 text-center text-xs text-slate-500">FY: {financialYear}</div>
+                    </div>
+
+                    {/* MAIN CONSOLE */}
+                    <div className="flex-1 overflow-y-auto p-8 print:p-0">
+                        
+                        {/* 1. DASHBOARD */}
+                        {currentTab === 'dashboard' && (
+                            <div className="max-w-4xl mx-auto space-y-6">
+                                <div className="bg-white p-6 rounded-xl shadow-sm border">
+                                    <h2 className="text-xl font-bold text-gray-800">Live Precious Metal Rates Today</h2>
+                                    <div className="grid grid-cols-2 gap-4 mt-4">
+                                        <div className="bg-gradient-to-r from-amber-500 to-yellow-600 p-6 rounded-xl text-white font-bold">Gold: ₹{goldRate.toLocaleString()} /g</div>
+                                        <div className="bg-gradient-to-r from-slate-400 to-slate-600 p-6 rounded-xl text-white font-bold">Silver: ₹{silverRate.toLocaleString()} /g</div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-6">
+                                    <div className="bg-white p-6 rounded-xl shadow-sm border">
+                                        <h3 className="font-bold text-gray-700 mb-4">Update Rates Index</h3>
+                                        <input type="number" value={inputGold} onChange={e => setInputGold(Number(e.target.value))} className="w-full border px-3 py-2 rounded-lg text-sm mb-3 outline-none" placeholder="Gold Rate" />
+                                        <input type="number" value={inputSilver} onChange={e => setInputSilver(Number(e.target.value))} className="w-full border px-3 py-2 rounded-lg text-sm mb-3 outline-none" placeholder="Silver Rate" />
+                                        <button onClick={() => { setGoldRate(inputGold); setSilverRate(inputSilver); localStorage.setItem('goldRate', inputGold); localStorage.setItem('silverRate', inputSilver); alert("Rates Saved Successfully!"); }} className="w-full bg-indigo-600 text-white py-2 rounded-lg text-sm font-bold shadow-sm">Save Rates</button>
+                                    </div>
+
+                                    <div className="bg-white p-6 rounded-xl shadow-sm border">
+                                        <h3 className="font-bold text-gray-700 mb-4">Shop Settings & Logo</h3>
+                                        <div className="bg-slate-50 p-3 rounded-lg border border-dashed mb-2">
+                                            <label className="block text-xs font-bold text-gray-600 mb-1">Upload Shop Logo:</label>
+                                            <input type="file" accept="image/*" onChange={handleLogoUpload} className="text-xs" />
+                                        </div>
+                                        <p className="text-xs text-gray-500 mt-2">GSTIN: {shopGST} | Ph: {shopPhone}</p>
+                                        <p className="text-xs text-gray-400 italic mt-1">{shopAddress}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 2. STOCK MATRIX */}
+                        {currentTab === 'stock' && (
+                            <div className="max-w-4xl mx-auto bg-white p-6 rounded-xl shadow-sm border">
+                                <div className="flex justify-between items-center border-b pb-4 mb-4">
+                                    <div>
+                                        <h2 className="text-lg font-bold text-gray-800">Excel Stock Sync</h2>
+                                        <p className="text-xs text-gray-400">Columns checklist: BARCODE, LABELNO., LABOUR, GW.</p>
+                                    </div>
+                                    <input type="file" accept=".xlsx, .xls" onChange={handleExcelImport} className="text-sm cursor-pointer" />
+                                </div>
+                                <table className="w-full text-left text-xs border-collapse">
+                                    <thead className="bg-slate-50 text-slate-600 font-bold uppercase">
+                                        <tr><th className="p-3">Barcode</th><th className="p-3">Label</th><th className="p-3">Type</th><th className="p-3 text-right">Weight</th><th className="p-3 text-right">Labour</th></tr>
+                                    </thead>
+                                    <tbody className="divide-y text-slate-700">
+                                        {stockList.length === 0 ? (
+                                            <tr><td colSpan={5} className="p-8 text-center text-gray-400">No active stock. Please upload excel ledger sheet.</td></tr>
+                                        ) : stockList.map((item, i) => (
+                                            <tr key={i}><td className="p-3 font-mono font-bold text-slate-900">{item.barcode}</td><td className="p-3">{item.labelNo}</td><td className="p-3">{item.itemType}</td><td className="p-3 text-right font-medium">{item.gw.toFixed(3)} g</td><td className="p-3 text-right">₹{item.labour}</td></tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+
+                        {/* 3. PRINT ENGINE */}
+                        {(currentTab === 'estimate' || currentTab === 'sale') && (
+                            <div className="max-w-3xl mx-auto bg-white p-8 rounded-xl shadow-md border print:border-none print:shadow-none print:p-0">
+                                <div className="flex justify-between items-start border-b-2 border-slate-900 pb-4 mb-4">
+                                    <div>
+                                        <h2 className="text-2xl font-black text-slate-800">{currentTab === 'sale' ? 'TAX INVOICE' : 'ESTIMATE QUOTATION'}</h2>
+                                        <p className="text-xs font-mono text-gray-500 font-bold mt-1">Invoice: {invoiceNumber}</p>
+                                        <p className="text-xs text-gray-400 font-medium">Date: {new Date().toLocaleDateString('en-IN')}</p>
+                                    </div>
+                                    <div className="text-right">
+                                        {shopLogo ? <img src={shopLogo} alt="Logo" className="h-12 w-auto ml-auto mb-1 object-contain" /> : <h2 className="text-xl font-black text-indigo-900">{shopName}</h2>}
+                                        <p className="text-[11px] text-gray-500 font-medium">GSTIN: {shopGST} | Ph: {shopPhone}</p>
+                                        <p className="text-[11px] text-gray-400">{shopAddress}</p>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4 mb-4 bg-slate-50 p-3 rounded-lg border print:bg-transparent print:border-none print:p-0 print:mb-2">
+                                    <input type="text" placeholder="Customer Full Name" value={customerName} onChange={e => setCustomerName(e.target.value)} className="w-full bg-transparent font-bold text-sm text-slate-800 outline-none print:p-0" />
+                                    <input type="text" placeholder="Mobile Number" value={mobileNumber} onChange={e => setMobileNumber(e.target.value)} className="w-full bg-transparent text-sm text-slate-700 outline-none print:p-0" />
+                                </div>
+
+                                {/* 📸 લેપટોપ કેમેરા સ્કેનર વિન્ડો */}
+                                <div className="mb-4 print:hidden bg-slate-100 p-4 rounded-xl border border-dashed border-slate-300 max-w-xs mx-auto text-center">
+                                    <p className="text-[10px] font-black text-indigo-600 mb-2">📸 Active Laptop Web Scanner Ready</p>
+                                    <div id="camera-reader" className="w-full overflow-hidden rounded-md bg-black"></div>
+                                </div>
+
+                                <div className="flex gap-2 mb-4 print:hidden">
+                                    <input type="text" placeholder="Type barcode and press Enter if camera fails..." value={billingBarcode} onChange={e => setBillingBarcode(e.target.value)} className="flex-1 border px-3 py-2 rounded-lg text-sm outline-none" />
+                                    <button onClick={() => { handleAutoScanning(billingBarcode, currentTab === 'estimate'); setBillingBarcode(''); }} className="bg-slate-800 text-white px-4 rounded-lg text-sm font-semibold">Add</button>
+                                    <button onClick={() => window.print()} className="bg-indigo-600 text-white px-5 rounded-lg text-sm font-bold shadow-md">🖨️ Print / Save PDF</button>
+                                </div>
+
+                                <table className="w-full text-left text-xs border border-collapse border-slate-200">
+                                    <thead className="bg-slate-900 text-white font-bold uppercase text-[10px]">
+                                        <tr><th className="p-2 border">Item Details</th><th className="p-2 border text-center">HSN</th><th className="p-2 border text-right">Gross Wt.</th><th className="p-2 border text-right">Rate</th><th className="p-2 border text-right">Labour</th><th className="p-2 border text-right">Total</th></tr>
+                                    </thead>
+                                    <tbody className="divide-y text-slate-800 font-medium">
+                                        {billItems.length === 0 ? (
+                                            <tr><td colSpan={6} className="p-6 text-center text-gray-400 font-normal">No items loaded. Please scan a barcode.</td></tr>
+                                        ) : billItems.map((item, i) => (
+                                            <tr key={i}>
+                                                <td className="p-2 border font-mono font-bold text-slate-900">{item.barcode} <span className="text-[10px] text-slate-400 block font-sans font-normal">({item.labelNo})</span></td>
+                                                <td className="p-2 border text-center font-bold text-slate-600">{item.hsn}</td>
+                                                <td className="p-2 border text-right font-mono">{item.gw.toFixed(3)} g</td>
+                                                <td className="p-2 border text-right">₹{item.rateUsed}</td>
+                                                <td className="p-2 border text-right">₹{item.labour}</td>
+                                                <td className="p-2 border text-right font-mono font-bold text-slate-900">₹{item.total.toLocaleString('en-IN')}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+
+                                <div className="flex justify-between items-start pt-4 mt-2 border-t border-slate-300">
+                                    <div className="text-[10px] text-slate-400 max-w-xs space-y-0.5">
+                                        <p className="font-bold text-slate-600 uppercase mb-1">Terms & Conditions:</p>
+                                        <p>1. Custom goods cannot be exchanged or returned.</p>
+                                        <p>2. Disputes are subject to Surat Jurisdiction limits.</p>
+                                        <p>3. This is a computer-generated digital tax invoice. E&OE.</p>
+                                    </div>
+                                    <div className="w-56 space-y-1.5 text-xs text-slate-600 font-medium">
+                                        <div className="flex justify-between"><span>Subtotal Gross:</span><span className="font-bold text-slate-900">₹{subTotal.toLocaleString('en-IN')}</span></div>
+                                        <div className="flex justify-between text-rose-600 items-center">
+                                            <span>Discount Value (₹):</span>
+                                            <input type="number" className="w-16 border text-right text-xs px-1 print:hidden" value={discount || ''} onChange={e => setDiscount(Number(e.target.value))} />
+                                            <span className="hidden print:block font-bold">- ₹{discount}</span>
+                                        </div>
+                                        {currentTab === 'sale' && (
+                                            <>
+                                                <div className="flex justify-between text-[11px] text-slate-400"><span>CGST (1.5%):</span><span>₹{(gst/2).toLocaleString('en-IN')}</span></div>
+                                                <div className="flex justify-between text-[11px] text-slate-400"><span>SGST (1.5%):</span><span>₹{(gst/2).toLocaleString('en-IN')}</span></div>
+                                                <div className="flex justify-between border-b pb-1"><span>Total Tax (3%):</span><span className="font-bold text-slate-900">₹{gst.toLocaleString('en-IN')}</span></div>
+                                            </>
+                                        )}
+                                        <div className="flex justify-between text-base font-black text-indigo-900 pt-0.5"><span>Grand Total:</span><span>₹{Math.round(grandTotal).toLocaleString('en-IN')}</span></div>
+                                    </div>
+                                </div>
+
+                                <div className="hidden print:flex justify-between mt-12 text-[10px]">
+                                    <div className="border-t border-slate-300 border-dashed w-36 text-center pt-1 text-slate-400">Customer Signature</div>
+                                    <div className="border-t border-slate-300 border-dashed w-52 text-center pt-1 font-bold text-slate-900">For, {shopName}<br><br><span className="text-[9px] font-normal text-slate-400">Authorized Signatory</span></div>
+                                </div>
+
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
